@@ -6,6 +6,8 @@
 <title>大頭教練愛運動｜團課報名</title>
 <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@300;400;500;700;900&display=swap" rel="stylesheet">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-database-compat.js"></script>
 <style>
 * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
 
@@ -1085,6 +1087,40 @@ body {
 const STORAGE_KEY = 'tcl_bookings_v2';
 const SETTINGS_KEY = 'tcl_settings_v2';
 
+// ── Firebase Setup ──
+const firebaseConfig = {
+  databaseURL: "https://tcl-booking-default-rtdb.asia-southeast1.firebasedatabase.app"
+};
+firebase.initializeApp(firebaseConfig);
+const db = firebase.database();
+
+// ── Firebase CRUD ──
+async function fbSaveBookings(data) {
+  try {
+    await db.ref('bookings').set(data);
+  } catch(e) { console.error('Firebase write error:', e); }
+}
+
+async function fbGetBookings() {
+  try {
+    const snap = await db.ref('bookings').get();
+    return snap.exists() ? snap.val() : {};
+  } catch(e) { console.error('Firebase read error:', e); return {}; }
+}
+
+async function fbSaveWaitlist(data) {
+  try {
+    await db.ref('waitlist').set(data);
+  } catch(e) { console.error('Firebase waitlist write error:', e); }
+}
+
+async function fbGetWaitlist() {
+  try {
+    const snap = await db.ref('waitlist').get();
+    return snap.exists() ? snap.val() : {};
+  } catch(e) { return {}; }
+}
+
 let state = {
   step: 1,
   selectedClass: null,
@@ -1118,13 +1154,11 @@ function saveSettingsData(data) {
 }
 
 function getBookings() {
-  try {
-    return JSON.parse(localStorage.getItem(STORAGE_KEY)) || {};
-  } catch { return {}; }
+  try { return JSON.parse(localStorage.getItem(STORAGE_KEY)) || {}; } catch { return {}; }
 }
-
 function saveBookings(data) {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+  fbSaveBookings(data); // also sync to Firebase
 }
 
 function getClassBookings(classKey) {
@@ -1512,9 +1546,16 @@ function backToList() {
   renderParticipantsList();
 }
 
-function submitAllBookings() {
+async function submitAllBookings() {
   const settings = getSettings();
-  const bookings = getBookings();
+  let bookings = getBookings();
+  try {
+    const fbData = await fbGetBookings();
+    if (fbData && Object.keys(fbData).length > 0) {
+      bookings = fbData;
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(fbData));
+    }
+  } catch(e) {}
   // Check slots counting both existing bookings AND persons in current batch
   const batchCount = {};
   for (const p of persons) {
@@ -1676,6 +1717,8 @@ function saveSettings() {
 function clearAllData() {
   if (confirm('確定要清除所有報名資料？此操作無法復原。')) {
     saveBookings({});
+    localStorage.setItem(WAITLIST_KEY, JSON.stringify({}));
+    fbSaveWaitlist({});
     renderAdmin();
     showToast('已清除所有報名資料');
   }
@@ -1766,7 +1809,20 @@ function doLogin() {
   }
 }
 
-function renderAdmin() {
+async function renderAdmin() {
+  // Show loading
+  document.getElementById('statsRow').innerHTML = '<div style="grid-column:1/-1;text-align:center;padding:20px;color:var(--mid);font-size:13px;">⏳ 載入中...</div>';
+  try {
+    // Load from Firebase and sync to localStorage
+    const fbData = await fbGetBookings();
+    if (fbData && Object.keys(fbData).length > 0) {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(fbData));
+    }
+    const fbWl = await fbGetWaitlist();
+    if (fbWl && Object.keys(fbWl).length > 0) {
+      localStorage.setItem(WAITLIST_KEY, JSON.stringify(fbWl));
+    }
+  } catch(e) { console.error('Load error:', e); }
   renderStats();
   renderOverview();
   renderClassLists();
@@ -1856,6 +1912,7 @@ function saveWaitlistEntry(classKey, name, type) {
     if (!w[classKey]) w[classKey] = [];
     w[classKey].push({ name, type, time: new Date().toISOString(), id: Date.now() });
     localStorage.setItem(WAITLIST_KEY, JSON.stringify(w));
+    fbSaveWaitlist(w); // sync to Firebase
   } catch {}
 }
 
@@ -1864,6 +1921,7 @@ function removeWaitlistEntry(classKey, id) {
     const w = JSON.parse(localStorage.getItem(WAITLIST_KEY)) || {};
     if (w[classKey]) w[classKey] = w[classKey].filter(e => e.id !== id);
     localStorage.setItem(WAITLIST_KEY, JSON.stringify(w));
+    fbSaveWaitlist(w);
     renderWaitlistAdmin();
     renderClassGridInto('modal_classGrid', 'modalSelectClass');
   } catch {}
@@ -1959,6 +2017,15 @@ function showToast(msg) {
 // ══════════════════════════════════════
 // INIT
 // ══════════════════════════════════════
+
+// Listen for real-time slot updates from Firebase
+db.ref('bookings').on('value', (snap) => {
+  if (snap.exists()) {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(snap.val()));
+    renderClassGridInto('modal_classGrid', 'modalSelectClass');
+  }
+});
+
 renderParticipantsList();
 renderClassGrid();
 </script>
